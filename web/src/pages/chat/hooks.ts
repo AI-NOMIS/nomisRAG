@@ -24,6 +24,7 @@ import {
   useSendMessageWithSse,
 } from '@/hooks/logic-hooks';
 import { IConversation, IDialog, Message } from '@/interfaces/database/chat';
+import { OllamaMessage, ollamaService } from '@/services/ollama-service';
 import { getFileExtension } from '@/utils';
 import api from '@/utils/api';
 import { getConversationId } from '@/utils/chat';
@@ -366,6 +367,7 @@ export const useSendNextMessage = (controller: AbortController) => {
   const { setConversation } = useSetConversation();
   const { conversationId, isNew } = useGetChatSearchParams();
   const { handleInputChange, value, setValue } = useHandleMessageInputChange();
+  const { data: currentDialog } = useFetchNextDialog();
 
   const { send, answer, done } = useSendMessageWithSse(
     api.completeConversation,
@@ -383,9 +385,96 @@ export const useSendNextMessage = (controller: AbortController) => {
   const { setConversationIsNew, getConversationIsNew } =
     useSetChatRouteParams();
 
+  // Add Ollama state management
+  const [isOllamaMode, setIsOllamaMode] = useState(false);
+  const [ollamaResponse, setOllamaResponse] = useState('');
+  const [ollamaLoading, setOllamaLoading] = useState(false);
+
+  // Check if current dialog is Ollama
+  useEffect(() => {
+    const isOllama =
+      currentDialog?.id === 'ollama-default' ||
+      currentDialog?.name === 'Ollama Chatbot' ||
+      currentDialog?.description?.includes('Ollama') ||
+      currentDialog?.llm_setting_type === 'Ollama';
+    setIsOllamaMode(isOllama);
+  }, [currentDialog]);
+
   const stopOutputMessage = useCallback(() => {
     controller.abort();
   }, [controller]);
+
+  // Ollama message sending function
+  const sendOllamaMessage = useCallback(
+    async (message: Message) => {
+      setOllamaLoading(true);
+      setOllamaResponse('');
+
+      try {
+        // Convert current messages to Ollama format
+        const ollamaMessages: OllamaMessage[] = derivedMessages
+          .filter(
+            (msg) => msg.role !== MessageType.Assistant || msg.content.trim(),
+          )
+          .map((msg) => ({
+            role: msg.role === MessageType.User ? 'user' : 'assistant',
+            content: msg.content,
+          }));
+
+        // Add the new user message
+        ollamaMessages.push({
+          role: 'user',
+          content: message.content,
+        });
+
+        // Add empty assistant message for streaming response
+        const assistantMessageId = uuid();
+        addNewestAnswer({
+          answer: '',
+          id: assistantMessageId,
+        });
+
+        // Use streaming chat
+        let fullResponse = '';
+        const config = ollamaService.getConfig();
+        await ollamaService.chatStream(
+          {
+            model: config.defaultModel,
+            messages: ollamaMessages,
+          },
+          (chunk) => {
+            if (chunk.message?.content) {
+              fullResponse += chunk.message.content;
+              setOllamaResponse(fullResponse);
+
+              // Update the assistant message in real-time
+              addNewestAnswer({
+                answer: fullResponse,
+                id: assistantMessageId,
+              });
+            }
+          },
+        );
+
+        // Final update with complete response
+        addNewestAnswer({
+          answer: fullResponse,
+          id: assistantMessageId,
+        });
+      } catch (error) {
+        console.error('Ollama chat error:', error);
+        // Remove the loading message and show error
+        removeLatestMessage();
+        addNewestAnswer({
+          answer: `Error: ${error instanceof Error ? error.message : 'Unknown error occurred'}`,
+          id: uuid(),
+        });
+      } finally {
+        setOllamaLoading(false);
+      }
+    },
+    [derivedMessages, addNewestAnswer, removeLatestMessage],
+  );
 
   const sendMessage = useCallback(
     async ({
@@ -397,6 +486,12 @@ export const useSendNextMessage = (controller: AbortController) => {
       currentConversationId?: string;
       messages?: Message[];
     }) => {
+      // Use Ollama if in Ollama mode
+      if (isOllamaMode) {
+        return sendOllamaMessage(message);
+      }
+
+      // Original logic for regular API
       const res = await send(
         {
           conversation_id: currentConversationId ?? conversationId,
@@ -419,6 +514,8 @@ export const useSendNextMessage = (controller: AbortController) => {
       setValue,
       send,
       controller,
+      isOllamaMode,
+      sendOllamaMessage,
     ],
   );
 
@@ -462,10 +559,10 @@ export const useSendNextMessage = (controller: AbortController) => {
 
   useEffect(() => {
     //  #1289
-    if (answer.answer && conversationId && isNew !== 'true') {
+    if (answer.answer && conversationId && isNew !== 'true' && !isOllamaMode) {
       addNewestAnswer(answer);
     }
-  }, [answer, addNewestAnswer, conversationId, isNew]);
+  }, [answer, addNewestAnswer, conversationId, isNew, isOllamaMode]);
 
   const handlePressEnter = useCallback(
     (documentIds: string[]) => {
@@ -478,7 +575,7 @@ export const useSendNextMessage = (controller: AbortController) => {
         id,
         role: MessageType.User,
       });
-      if (done) {
+      if (done || isOllamaMode) {
         setValue('');
         handleSendMessage({
           id,
@@ -488,7 +585,7 @@ export const useSendNextMessage = (controller: AbortController) => {
         });
       }
     },
-    [addNewestQuestion, handleSendMessage, done, setValue, value],
+    [addNewestQuestion, handleSendMessage, done, setValue, value, isOllamaMode],
   );
 
   return {
@@ -497,11 +594,12 @@ export const useSendNextMessage = (controller: AbortController) => {
     value,
     setValue,
     regenerateMessage,
-    sendLoading: !done,
-    loading,
+    sendLoading: !done || ollamaLoading,
     ref,
+    loading,
     derivedMessages,
     removeMessageById,
+    removeMessagesAfterCurrentMessage,
     stopOutputMessage,
   };
 };

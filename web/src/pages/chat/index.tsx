@@ -17,7 +17,7 @@ import {
 } from 'antd';
 import { MenuItemProps } from 'antd/lib/menu/MenuItem';
 import classNames from 'classnames';
-import { useCallback, useState } from 'react';
+import React, { useCallback, useMemo, useState } from 'react';
 import ChatConfigurationModal from './chat-configuration-modal';
 import ChatContainer from './chat-container';
 import {
@@ -56,6 +56,13 @@ const Chat = () => {
   const { handleClickConversation } = useClickConversationCard();
   const { dialogId, conversationId } = useGetChatSearchParams();
   const { theme } = useTheme();
+
+  // Auto-select Ollama dialog if no dialog is selected
+  React.useEffect(() => {
+    if (!dialogId || dialogId === '') {
+      handleClickDialog('ollama-default');
+    }
+  }, [dialogId, handleClickDialog]);
   const {
     list: conversationList,
     addTemporaryConversation,
@@ -89,6 +96,45 @@ const Chat = () => {
   const [controller, setController] = useState(new AbortController());
   const { showEmbedModal, hideEmbedModal, embedVisible, beta } =
     useShowEmbedModal();
+
+  // Add default Ollama dialog
+  const ollamaDialog: IDialog = useMemo(
+    () => ({
+      id: 'ollama-default',
+      name: 'Ollama Chatbot',
+      description: 'Chat with Ollama AI models locally',
+      icon: '🤖',
+      dialog_id: 'ollama-default',
+      create_date: new Date().toISOString(),
+      create_time: Date.now(),
+      update_date: new Date().toISOString(),
+      update_time: Date.now(),
+      kb_ids: [],
+      kb_names: [],
+      language: 'en',
+      llm_id: 'ollama',
+      llm_setting: {},
+      llm_setting_type: 'Ollama',
+      prompt_config: {
+        empty_response: 'I apologize, but I cannot provide a response to that.',
+        parameters: [],
+        prologue:
+          'Hello! I am an AI assistant powered by Ollama. How can I help you today?',
+        system: 'You are a helpful AI assistant.',
+      },
+      prompt_type: 'simple',
+      status: 'active',
+      tenant_id: 'default',
+      vector_similarity_weight: 0.3,
+      similarity_threshold: 0.2,
+    }),
+    [],
+  );
+
+  // Combine Ollama dialog with existing dialogs, with Ollama as the first option
+  const extendedDialogList = useMemo(() => {
+    return [ollamaDialog, ...dialogList];
+  }, [ollamaDialog, dialogList]);
 
   const handleAppCardEnter = (id: string) => () => {
     handleItemEnter(id);
@@ -241,7 +287,7 @@ const Chat = () => {
           <Divider></Divider>
           <Flex className={styles.chatAppContent} vertical gap={10}>
             <Spin spinning={dialogLoading} wrapperClassName={styles.chatSpin}>
-              {dialogList.map((x) => (
+              {extendedDialogList.map((x) => (
                 <Card
                   key={x.id}
                   hoverable
@@ -269,7 +315,7 @@ const Chat = () => {
                         <div>{x.description}</div>
                       </section>
                     </Space>
-                    {activated === x.id && (
+                    {activated === x.id && x.id !== 'ollama-default' && (
                       <section>
                         <Dropdown menu={{ items: buildAppItems(x) }}>
                           <ChatAppCube
