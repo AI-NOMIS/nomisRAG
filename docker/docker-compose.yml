@@ -8,6 +8,8 @@ services:
     depends_on:
       mysql:
         condition: service_healthy
+      ollama:
+        condition: service_healthy
     image: ${RAGFLOW_IMAGE}
     # Example configuration to set up an MCP server:
     # command:
